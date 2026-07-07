@@ -53,6 +53,85 @@ public class MassDeqTests
     }
 
     [Fact]
+    public void Dequeue_ReturnsFromTail_MatchingTryDequeue()
+    {
+        var deq = new MassDeq<string>();
+        deq.Enqueue("a");
+        deq.Enqueue("b");
+        deq.Enqueue("c"); // head="c", tail="a"
+
+        Assert.Equal("a", deq.Dequeue());
+        Assert.Equal("b", deq.Dequeue());
+        Assert.Equal("c", deq.Dequeue());
+        Assert.Empty(deq);
+    }
+
+    [Fact]
+    public void Dequeue_ThrowsWhenEmpty()
+    {
+        var deq = new MassDeq<int>();
+        Assert.Throws<InvalidOperationException>(() => deq.Dequeue());
+    }
+
+    [Fact]
+    public void TryPeek_ReturnsNextItem_WithoutRemoving()
+    {
+        var deq = new MassDeq<int>();
+        deq.Enqueue(1);
+        deq.Enqueue(2); // head=2, tail=1
+
+        Assert.True(deq.TryPeek(out int peeked));
+        Assert.Equal(1, peeked); // same item TryDequeue would return
+        Assert.Equal(2, deq.Count); // nothing removed
+
+        Assert.True(deq.TryDequeue(out int dequeued));
+        Assert.Equal(peeked, dequeued);
+    }
+
+    [Fact]
+    public void TryPeek_ReturnsFalse_WhenEmpty()
+    {
+        var deq = new MassDeq<int>();
+        Assert.False(deq.TryPeek(out int item));
+        Assert.Equal(default, item);
+    }
+
+    [Fact]
+    public void Peek_ReturnsNextItem_WithoutRemoving()
+    {
+        var deq = new MassDeq<string>();
+        deq.Enqueue("a");
+        deq.Enqueue("b");
+
+        Assert.Equal("a", deq.Peek());
+        Assert.Equal(2, deq.Count); // still there
+        Assert.Equal("a", deq.Peek()); // idempotent
+    }
+
+    [Fact]
+    public void Peek_ThrowsWhenEmpty()
+    {
+        var deq = new MassDeq<int>();
+        Assert.Throws<InvalidOperationException>(() => deq.Peek());
+    }
+
+    [Fact]
+    public void Peek_RespectsReversedMode()
+    {
+        var deq = new MassDeq<int>();
+        deq.Enqueue(1);
+        deq.Enqueue(2);
+        deq.Enqueue(3); // head=3, tail=1, TryDequeue order: 1,2,3
+
+        Assert.Equal(1, deq.Peek());
+
+        deq.Reverse(); // TryDequeue order flips
+        Assert.Equal(3, deq.Peek());
+        Assert.Equal(3, deq.Dequeue());
+        Assert.Equal(2, deq.Peek());
+    }
+
+    [Fact]
     public void TryMassDequeue_ReturnsSegment()
     {
         var deq = new MassDeq<int>();
@@ -354,6 +433,113 @@ public class MassDeqTests
         {
             Assert.True(finalContents.Contains(id), $"InsertBefore reported success for {id} but it is not reachable in the live deque.");
         }
+    }
+
+    [Fact]
+    public void TryRemove_OutParam_ReturnsRemovedValue()
+    {
+        var deq = new MassDeq<string>();
+        deq.Enqueue("a");
+        deq.Enqueue("b");
+        deq.Enqueue("c");
+
+        Assert.True(deq.TryRemove("b", out string? removed));
+        Assert.Equal("b", removed);
+        Assert.Equal(2, deq.Count);
+        Assert.DoesNotContain("b", deq.ToList());
+    }
+
+    [Fact]
+    public void TryRemove_Head_WithSuccessors_OnlyRemovesThatNode()
+    {
+        // Regression test: MassDeqEnumerator.Remove() used to call MassDeq<T>.Clear() whenever the
+        // removed node happened to be the physical head, wiping the whole deque (and silently
+        // resetting IsReversed) even when other nodes remained.
+        var deq = new MassDeq<string>();
+        deq.Enqueue("a");
+        deq.Enqueue("b");
+        deq.Enqueue("c"); // head=c, b, a=tail
+
+        Assert.True(deq.TryRemove("c", out string? removed));
+        Assert.Equal("c", removed);
+        Assert.Equal(2, deq.Count);
+        Assert.Equal(new[] { "b", "a" }, deq.ToList());
+    }
+
+    [Fact]
+    public void TryRemove_Tail_WithPredecessors_OnlyRemovesThatNode()
+    {
+        var deq = new MassDeq<string>();
+        deq.Enqueue("a");
+        deq.Enqueue("b");
+        deq.Enqueue("c"); // head=c, b, a=tail
+
+        Assert.True(deq.TryRemove("a", out string? removed));
+        Assert.Equal("a", removed);
+        Assert.Equal(2, deq.Count);
+        Assert.Equal(new[] { "c", "b" }, deq.ToList());
+    }
+
+    [Fact]
+    public void TryRemove_LastRemainingItem_EmptiesDeque_WithoutResettingIsReversed()
+    {
+        var deq = new MassDeq<string>();
+        deq.Enqueue("solo");
+        deq.Reverse();
+
+        Assert.True(deq.TryRemove("solo", out string? removed));
+        Assert.Equal("solo", removed);
+        Assert.Empty(deq);
+        Assert.True(deq.IsReversed); // Remove() must not silently un-reverse via Clear()
+    }
+
+    [Fact]
+    public void TryRemove_OutParam_ReturnsFalse_WhenNotFound()
+    {
+        var deq = new MassDeq<string>();
+        deq.Enqueue("a");
+
+        Assert.False(deq.TryRemove("missing", out string? removed));
+        Assert.Equal(default, removed);
+        Assert.Single(deq);
+    }
+
+    [Fact]
+    public void ICollection_Remove_DelegatesToTryRemove()
+    {
+        ICollection<int> deq = new MassDeq<int>();
+        deq.Add(1);
+        deq.Add(2);
+
+        Assert.True(deq.Remove(1));
+        Assert.False(deq.Remove(99));
+        Assert.Single(deq);
+    }
+
+    [Fact]
+    public void IMassDeq_Implements_ICollection_And_IReadOnlyCollection()
+    {
+        IMassDeq<int> deq = new MassDeq<int>();
+        deq.Enqueue(1);
+        deq.Enqueue(2);
+
+        Assert.IsAssignableFrom<ICollection<int>>(deq);
+        Assert.IsAssignableFrom<IReadOnlyCollection<int>>(deq);
+        Assert.Equal(2, ((IReadOnlyCollection<int>)deq).Count);
+    }
+
+    [Fact]
+    public void IMassDeq_TryMassDequeue_And_Clone_ReturnIMassDeq()
+    {
+        IMassDeq<int> deq = new MassDeq<int>();
+        for (int i = 1; i <= 4; i++) deq.Enqueue(i);
+
+        Assert.True(deq.TryMassDequeue(v => v <= 3, out IMassDeq<int> segment));
+        Assert.Equal(new[] { 3, 2, 1 }, segment.ToList());
+
+        IMassDeq<int> clone = deq.Clone();
+        Assert.Equal(deq.ToList(), clone.ToList());
+        Assert.NotSame(deq, clone);
     }
 
     private class MyVal
