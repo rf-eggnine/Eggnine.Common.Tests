@@ -349,6 +349,7 @@ public class MassDeqTests
         Assert.True(enumerator.MoveNext());
 
         Assert.Throws<InvalidOperationException>(() => enumerator.InsertBefore(99));
+        Assert.Throws<InvalidOperationException>(() => enumerator.InsertAfter(99));
         Assert.Throws<InvalidOperationException>(() => enumerator.Remove());
     }
 
@@ -417,6 +418,38 @@ public class MassDeqTests
         // Insert "Z" before "c", the tail (should result in: Y, a, X, b, Z, c)
         Assert.True(deq.InsertBefore("Z", s => s == "c"));
         Assert.Equal(new[] { "Y", "a", "X", "b", "Z", "c" }, deq.ToList());
+    }
+
+    [Fact]
+    public void InsertAfter_Works_At_Head_Tail_And_Middle()
+    {
+        var deq = new MassDeq<string>();
+        deq.EnqueueTail("a");
+        deq.EnqueueTail("b");
+        deq.EnqueueTail("c"); // head="a", tail="c"
+
+        // Insert "X" after "a", the head (should result in: a, X, b, c)
+        Assert.True(deq.InsertAfter("X", s => s == "a"));
+        Assert.Equal(new[] { "a", "X", "b", "c" }, deq.ToList());
+
+        // Insert "Y" after "X", the middle (should result in: a, X, Y, b, c)
+        Assert.True(deq.InsertAfter("Y", s => s == "X"));
+        Assert.Equal(new[] { "a", "X", "Y", "b", "c" }, deq.ToList());
+
+        // Insert "Z" after "c", the tail (should result in: a, X, Y, b, c, Z)
+        Assert.True(deq.InsertAfter("Z", s => s == "c"));
+        Assert.Equal(new[] { "a", "X", "Y", "b", "c", "Z" }, deq.ToList());
+    }
+
+    [Fact]
+    public void InsertAfter_ReturnsFalse_WhenPredicateMatchesNothing()
+    {
+        var deq = new MassDeq<string>();
+        deq.EnqueueTail("a");
+        deq.EnqueueTail("b");
+
+        Assert.False(deq.InsertAfter("X", s => s == "missing"));
+        Assert.Equal(new[] { "a", "b" }, deq.ToList());
     }
 
     [Fact]
@@ -632,6 +665,146 @@ public class MassDeqTests
         IMassDeq<int> clone = deq.Clone();
         Assert.Equal(deq.ToList(), clone.ToList());
         Assert.NotSame(deq, clone);
+    }
+
+    [Fact]
+    public void Clone_AsFrozen_ProducesFrozenCopy_OriginalUnaffected()
+    {
+        var deq = new MassDeq<int>();
+        deq.EnqueueTail(1);
+        deq.EnqueueTail(2);
+        deq.EnqueueTail(3);
+
+        MassDeq<int> frozen = deq.Clone(asFrozen: true);
+
+        Assert.True(frozen.IsReadOnly);
+        Assert.False(deq.IsReadOnly);
+        Assert.Equal(deq.ToList(), frozen.ToList());
+
+        // The clone is frozen, not the source it was cloned from.
+        deq.EnqueueTail(4);
+        Assert.Equal(new[] { 1, 2, 3 }, frozen.ToList());
+    }
+
+    [Fact]
+    public void CloneReverse_AsFrozen_ProducesFrozenReversedCopy()
+    {
+        var deq = new MassDeq<int>();
+        for (int i = 1; i <= 3; i++) deq.EnqueueTail(i); // head=1, tail=3
+
+        MassDeq<int> frozen = deq.CloneReverse(asFrozen: true);
+
+        Assert.True(frozen.IsReadOnly);
+        Assert.Equal(new[] { 3, 2, 1 }, frozen.ToList());
+        Assert.Throws<InvalidOperationException>(() => frozen.EnqueueTail(99));
+    }
+
+    [Fact]
+    public void FrozenDeq_MutatingMembers_AllThrow()
+    {
+        var frozen = new MassDeq<int>();
+        frozen.EnqueueTail(1);
+        frozen.EnqueueTail(2);
+        frozen = frozen.Clone(asFrozen: true);
+
+        Assert.Throws<InvalidOperationException>(() => frozen.EnqueueHead(0));
+        Assert.Throws<InvalidOperationException>(() => frozen.EnqueueTail(3));
+        Assert.Throws<InvalidOperationException>(() => frozen.TryDequeueHead(out _));
+        Assert.Throws<InvalidOperationException>(() => frozen.TryDequeueTail(out _));
+        Assert.Throws<InvalidOperationException>(() => frozen.DequeueHead());
+        Assert.Throws<InvalidOperationException>(() => frozen.DequeueTail());
+        Assert.Throws<InvalidOperationException>(() => frozen.TryRemove(1, out _));
+        Assert.Throws<InvalidOperationException>(() => frozen.InsertBefore(99, v => v == 1));
+        Assert.Throws<InvalidOperationException>(() => frozen.InsertAfter(99, v => v == 1));
+        Assert.Throws<InvalidOperationException>(() => frozen.TryMassDequeue(v => true, out _));
+        Assert.Throws<InvalidOperationException>(() => frozen.Clear());
+        Assert.Throws<InvalidOperationException>(() => ((ICollection<int>)frozen).Add(3));
+
+        // Nothing above actually mutated it.
+        Assert.Equal(new[] { 1, 2 }, frozen.ToList());
+    }
+
+    [Fact]
+    public void FrozenDeq_ReadMembers_AllWork_WithoutThrowing()
+    {
+        // Regression coverage: GetLiveEnumerator() used to guard on IsReadOnly, which meant
+        // Contains/Clone/CloneReverse's own frozen fast-path (skip the lock, walk directly)
+        // threw immediately instead of reading — freezing a deque made it unreadable through
+        // those three members. The guard belongs on the mutating call sites, not the walk
+        // primitive itself.
+        var frozen = new MassDeq<int>();
+        frozen.EnqueueTail(1);
+        frozen.EnqueueTail(2);
+        frozen.EnqueueTail(3);
+        frozen = frozen.Clone(asFrozen: true);
+
+        bool containsTwo = frozen.Contains(2);
+        bool containsNinetyNine = frozen.Contains(99);
+        Assert.True(containsTwo);
+        Assert.False(containsNinetyNine);
+
+        MassDeq<int> reclone = frozen.Clone();
+        Assert.Equal(new[] { 1, 2, 3 }, reclone.ToList());
+        Assert.False(reclone.IsReadOnly); // Clone() without asFrozen produces a mutable copy
+
+        MassDeq<int> reclonedReversed = frozen.CloneReverse();
+        Assert.Equal(new[] { 3, 2, 1 }, reclonedReversed.ToList());
+
+        Assert.True(frozen.TryPeekHead(out int head));
+        Assert.Equal(1, head);
+        Assert.True(frozen.TryPeekTail(out int tail));
+        Assert.Equal(3, tail);
+        Assert.Equal(1, frozen.PeekHead());
+        Assert.Equal(3, frozen.PeekTail());
+
+        Assert.Equal(new[] { 1, 2, 3 }, frozen.ToList()); // foreach/GetEnumerator
+        var reversedWalk = new List<int>();
+        using (var e = frozen.GetReversedEnumerator())
+        {
+            while (e.MoveNext())
+                reversedWalk.Add(e.Current);
+        }
+        Assert.Equal(new[] { 3, 2, 1 }, reversedWalk);
+
+        Assert.Equal(3, frozen.Count);
+    }
+
+    [Fact]
+    public void FrozenDeq_Clone_OfAnAlreadyFrozenSource_DoesNotThrow()
+    {
+        // Regression: Clone()'s frozen fast-path used to call GetLiveEnumerator() on `this`,
+        // which threw when `this` was already frozen — cloning a frozen deque (e.g. to hand a
+        // second independent frozen snapshot to another reader) was impossible.
+        var deq = new MassDeq<int>();
+        deq.EnqueueTail(1);
+        deq.EnqueueTail(2);
+        MassDeq<int> frozen = deq.Clone(asFrozen: true);
+
+        MassDeq<int> frozenAgain = frozen.Clone(asFrozen: true);
+
+        Assert.True(frozenAgain.IsReadOnly);
+        Assert.Equal(frozen.ToList(), frozenAgain.ToList());
+        Assert.NotSame(frozen, frozenAgain);
+    }
+
+    [Fact]
+    public void FrozenDeq_StructuralFreeze_DoesNotFreezeElementFields()
+    {
+        // Freezing is structural (which nodes exist, and their order) not a deep/value freeze:
+        // the clone holds the SAME reference-typed elements as the source, so mutating an
+        // element's own field through any other reference to it is still visible through the
+        // frozen clone. Documented caveat, not a bug — covering it so it doesn't get "fixed"
+        // into a false promise later.
+        var deq = new MassDeq<MyVal>();
+        var shared = new MyVal { Val = 1 };
+        deq.EnqueueTail(shared);
+
+        MassDeq<MyVal> frozen = deq.Clone(asFrozen: true);
+        Assert.Equal(1, frozen.PeekHead().Val);
+
+        shared.Val = 2;
+
+        Assert.Equal(2, frozen.PeekHead().Val);
     }
 
     private class MyVal
